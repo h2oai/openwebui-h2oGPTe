@@ -5,9 +5,9 @@ tags: []
 ---
 
 # OpenWebUI + H2O GPTe Integration
+![OpenWebUI Demo](demo/OpenWebUI%20Demo.mp4)
 
 🚀 **One-Command Startup:** Get OpenWebUI with H2O GPTe pipelines running instantly!
-
 
 
 ## 🎯 Quick Start
