@@ -1,25 +1,54 @@
+version: '3.8'
+
 services:
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
+    container_name: openwebui-h2o
     ports:
       - "3000:8080"
     volumes:
+      - openwebui-data:/app/backend/data
       - shared-uploads:/app/backend/data/uploads
     restart: unless-stopped
     environment:
-      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-your-secret-key-here}
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-h2o-gptw-secret-key-2024}
+      - WEBUI_NAME=OpenWebUI with H2O GPTe
     depends_on:
       - pipelines
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - h2o-network
 
   pipelines:
     image: ghcr.io/open-webui/pipelines:main
+    container_name: h2o-pipelines
     volumes:
+      - ./pipelines:/app/pipelines
       - shared-uploads:/app/uploads
+      - pipeline-data:/app/backend/data
     restart: unless-stopped
     environment:
-      - PIPELINES_API_KEY=0p3n-w3bu!
+      - PIPELINES_API_KEY=${PIPELINES_API_KEY:-0p3n-w3bu!}
+      - PIPELINES_REQUIREMENTS_PATH=/app/pipelines/requirements.txt
+      - H2OGPTE_API_KEY=${H2OGPTE_API_KEY}
+      - H2OGPTE_URL=${H2OGPTE_URL}
     ports:
       - "9090:9099"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - h2o-network
 
 volumes:
-  shared-uploads: {}
+  openwebui-data:
+    name: openwebui-h2o-data
+  pipeline-data:
+    name: h2o-pipeline-data
+  shared-uploads:
+    name: shared-uploads
+
+networks:
+  h2o-network:
+    name: h2o-network
+    driver: bridge
