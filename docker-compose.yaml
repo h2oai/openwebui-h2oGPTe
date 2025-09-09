@@ -1,0 +1,25 @@
+services:
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "3000:8080"
+    volumes:
+      - shared-uploads:/app/backend/data/uploads
+    restart: unless-stopped
+    environment:
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY:-your-secret-key-here}
+    depends_on:
+      - pipelines
+
+  pipelines:
+    image: ghcr.io/open-webui/pipelines:main
+    volumes:
+      - shared-uploads:/app/uploads
+    restart: unless-stopped
+    environment:
+      - PIPELINES_API_KEY=0p3n-w3bu!
+    ports:
+      - "9090:9099"
+
+volumes:
+  shared-uploads: {}
