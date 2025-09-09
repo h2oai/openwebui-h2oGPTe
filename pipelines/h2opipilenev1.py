@@ -26,11 +26,6 @@ class Pipeline:
         self.client = None  # Client will be lazily initialized
 
     async def on_startup(self):
-        from llama_index.core import Settings, VectorStoreIndex, SimpleDirectoryReader
-        global documents, index
-        print(f"on_startup:{__name__}")
-        self.documents = SimpleDirectoryReader("/app/backend/data").load_data()
-        print(f"Loaded {len(self.documents)} documents.")
         if not self.valves.H2OGPTE_API_KEY:
             print("⚠️ WARNING: H2OGPTE_API_KEY not set in OpenWebUI.")
         pass

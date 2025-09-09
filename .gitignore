@@ -1,0 +1,4 @@
+__pycache__/
+valves.json
+.env
+.DS_Store
