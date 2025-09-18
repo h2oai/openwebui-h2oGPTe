@@ -15,6 +15,7 @@ start: ## Start all services (one command startup)
 	@echo "   1. Visit http://localhost:3000 and create an admin account"
 	@echo "   2. Go to Admin Panel > Settings > Connections"
 	@echo "   3. Add pipeline URL: http://host.docker.internal:9090"
+	@echo "   3. Add pipeline APIKEY: 0p3n-w3bu!"
 	@echo "   4. Configure your H2O GPTe settings in the pipeline"
 
 stop: ## Stop all services

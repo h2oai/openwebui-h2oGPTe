@@ -1,19 +1,66 @@
----
-noteId: "3214fe808d4211f095a3695d1fd87cdb"
-tags: []
-
----
-
 # OpenWebUI + H2O GPTe Integration
+![OpenWebUI Demo](demo/OpenWebUI%20Demo_01.gif)
 
 🚀 **One-Command Startup:** Get OpenWebUI with H2O GPTe pipelines running instantly!
 
 ## 🎯 Quick Start
 
 ### Option 1: Using the startup script (Recommended)
+For this one you need to have docker preinstalled. You may need to create a PAT from GitHub to pull the images from the GitHub container registry.
 
 ```bash
 ./start.sh
+```
+
+#### 🚀 Complete Setup Guide (After Running start.sh)
+
+Once your Docker containers are running, follow these steps to get H2O GPTe working:
+
+##### Step 1: Access OpenWebUI and Create Admin Account
+1. Open your browser and go to: **http://localhost:3000**
+2. **Create your first-time admin account** (this only happens once)
+3. **Login** with your new admin credentials
+
+##### Step 2: Connect the Pipeline
+1. Click on your **profile icon** (top-right corner)
+2. Go to **Settings**
+3. Navigate to **Admin Settings > Connections**
+4. **Add a new connection** with these details:
+   - **URL**: `http://host.docker.internal:9090`
+   - **API Key**: `0p3n-w3bu!`
+5. **Save** the connection
+
+##### Step 3: Configure H2O GPTe Pipeline
+1. Stay in **Admin Settings** and go to **Pipelines**
+2. You should see the available pipelines listed
+3. Find and click on **h2ogpte_pipeline** to configure it
+4. **Fill in the required fields**:
+   - **URL**: [Your H2O GPTe server URL]
+   - **API Key**: [Your H2O GPTe API key]
+   - **Collection ID**: [Your collection ID]
+   - **Collection Name**: [Your collection name]
+5. **Save** the pipeline configuration
+
+##### Step 4: Verify Setup
+1. Go back to the main chat interface
+2. Check the **Models** dropdown - you should now see **h2ogpte** listed
+3. **Select h2ogpte** as your model
+4. **Start querying!** 🎉
+
+> **✅ Success Indicator**: When you see "h2ogpte" in your models dropdown, everything is working correctly!
+
+---
+
+### 🔑 GitHub PAT Setup for Private Container Registry
+
+1. Generate a Personal Access Token:  
+   `GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token`  
+   - Select scopes: `read:packages`, `write:packages` (if pushing), `repo` (if pulling private repos).  
+
+2. Authenticate Docker with your PAT:  
+
+```bash
+echo "<YOUR_PAT>" | docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --password-stdin
 ```
 
 ### Option 2: Using Make
@@ -203,4 +250,4 @@ To develop custom pipelines:
 
 ---
 
-*Ready to start? Just run `./start.sh` and you're good to go!* 🎉
+*Ready to start? Just run `./start.sh` and follow the setup guide above!* 🎉
