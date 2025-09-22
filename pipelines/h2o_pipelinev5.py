@@ -30,6 +30,7 @@ class Pipeline:
         AUTO_CREATE_COLLECTION: bool = True  # Auto-create collection if not set
         DEFAULT_COLLECTION_NAME: str = "AutoDocs"
         DEBUG_MODE: bool = False
+        USE_AGENT: bool = False  # Use agentic capabilities
         STREAM_TIMEOUT: int = 60
         INGESTION_TIMEOUT: int = 300  # 5 minutes timeout for ingestion
         OPENWEBUI_API_KEY: str = ""  # OpenWebUI API key for file uploads
@@ -39,6 +40,7 @@ class Pipeline:
         self.type = "manifold"
         self.id = "h2ogpte_single"
         self.name = ""
+        self.session_id_n_files_map = {}
         
         self.valves = self.Valves(
             **{
@@ -48,6 +50,7 @@ class Pipeline:
                 "AUTO_CREATE_COLLECTION": os.getenv("AUTO_CREATE_COLLECTION", "true").lower() == "true",
                 "DEFAULT_COLLECTION_NAME": os.getenv("DEFAULT_COLLECTION_NAME", "OpenWebUI Documents"),
                 "DEBUG_MODE": os.getenv("DEBUG_MODE", "false").lower() == "true",
+                "USE_AGENT": os.getenv("USE_AGENT", "false").lower() == "true",
                 "STREAM_TIMEOUT": int(os.getenv("STREAM_TIMEOUT", "60")),
                 "INGESTION_TIMEOUT": int(os.getenv("INGESTION_TIMEOUT", "300")),
                 "OPENWEBUI_API_KEY": os.getenv("OPENWEBUI_API_KEY", ""),
@@ -60,7 +63,8 @@ class Pipeline:
         self.current_collection_id: Optional[str] = None
         self.chat_session_id: Optional[str] = None
         self.current_openwebui_chat_id: Optional[str] = None  # Track OpenWebUI chat ID
-
+        self.current_file_path: Optional[str] = None
+        
     def log_debug(self, message: str) -> None:
         if self.valves.DEBUG_MODE:
             print(f"[H2OGPTE] {message}")
@@ -87,6 +91,7 @@ class Pipeline:
         self.client = None
         self.current_collection_id = None
         self.current_openwebui_chat_id = None
+        self.current_file_path = None
 
     async def on_valves_updated(self) -> None:
         """Reinitialize when configuration changes"""
@@ -95,6 +100,7 @@ class Pipeline:
         self.client = None
         self.current_collection_id = None
         self.current_openwebui_chat_id = None
+        self.current_file_path = None
         
         # Reinitialize if we have valid config
         if self.valves.H2OGPTE_API_KEY and self.valves.H2OGPTE_URL and H2OGPTE is not None:
@@ -135,6 +141,7 @@ class Pipeline:
             
             # Create chat session
             self.chat_session_id = self.client.create_chat_session(collection_id=self.current_collection_id)
+            self.session_id_n_files_map[self.chat_session_id] = 0
             self.log_debug(f"Chat session created: {self.chat_session_id} (collection: {self.current_collection_id})")
 
     def reset_chat_session(self, collection_id: Optional[str] = None, reason: str = "reset requested") -> None:
@@ -162,6 +169,7 @@ class Pipeline:
         """Get authorization headers for API requests"""
         return {
             "Authorization": f"Bearer {self.valves.H2OGPTE_API_KEY}"
+
         }
 
     def upload_file_with_requests(self, file_path: str) -> str:
@@ -237,31 +245,9 @@ class Pipeline:
         except Exception as e:
             raise RuntimeError(f"Ingestion error: {str(e)}")
 
-    def check_ingestion_status_with_requests(self, ingestion_id: str) -> Dict[str, Any]:
-        """Check ingestion status using requests library"""
-        try:
-            url = f"{self.valves.H2OGPTE_URL}/api/v1/ingestions/{ingestion_id}"
-            headers = self._get_headers()
-            
-            response = requests.get(url, headers=headers)
-            
-            if response.status_code != 200:
-                # If ingestion endpoint doesn't exist, try uploads endpoint
-                alt_url = f"{self.valves.H2OGPTE_URL}/api/v1/uploads/{ingestion_id}/status"
-                alt_response = requests.get(alt_url, headers=headers)
-                if alt_response.status_code == 200:
-                    return alt_response.json()
-                else:
-                    raise RuntimeError(f"Status check failed: {response.status_code}: {response.text}")
-            
-            return response.json()
-            
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Status check request failed: {str(e)}")
-        except Exception as e:
-            raise RuntimeError(f"Status check error: {str(e)}")
 
     def upload_file_to_openwebui(self, file_path: str) -> Optional[Dict[str, Any]]:
+        print(f"Uploading file to OpenWebUI: {file_path}")
         """Upload file to OpenWebUI and return file info"""
         if not self.valves.OPENWEBUI_API_KEY:
             self.log_debug("OpenWebUI API key not configured, skipping upload")
@@ -426,6 +412,7 @@ class Pipeline:
         return None
 
     def _download_and_upload_reference_highlighting(self, message_id: str, chat_id: str) -> list:
+        print(f"Downloading and uploading reference highlighting for message ID: {message_id}, chat ID: {chat_id}")
         """Download PDFs with reference highlighting and upload to OpenWebUI."""
         try:
             if not self.client:
@@ -437,6 +424,7 @@ class Pipeline:
             temp_dir = tempfile.mkdtemp(prefix=f"h2ogpte_refs_{chat_id}_")
             
             try:
+                print(f"inside try block of download and upload function")
                 # Download reference highlighting using H2OGPTE client
                 highlighted_files = self.client.download_reference_highlighting(
                     message_id=message_id,
@@ -444,6 +432,7 @@ class Pipeline:
                     output_type="combined",  # Use combined for better user experience
                     limit=None  # Get all references
                 )
+                print(f"Downloaded {len(highlighted_files)} highlighted files to {temp_dir}")
                 
                 # Upload each file to OpenWebUI and collect results
                 result = []
@@ -490,10 +479,7 @@ class Pipeline:
                     
         except Exception as e:
             self.log_debug(f"Error downloading and uploading reference highlighting: {str(e)}")
-            return []
-
-        
-    
+            return []         
 
     def _stream_response(self, query_args: dict) -> Generator[str, None, None]:
         """Enhanced streaming with improved display and final answer extraction"""
@@ -545,10 +531,13 @@ class Pipeline:
             print("Streaming thread started")
 
             # Phase 1: Enhanced collapsible details section
-            yield "<details open>\n"
-            yield "    <summary>🧠 Live Agentic Flow (Processing...)</summary>\n"
-            yield "\n"
-            yield "```\n"
+            if self.valves.USE_AGENT:
+                yield "<details open>\n"
+                yield "    <summary>🧠 Live Agentic Flow (Processing...)</summary>\n"
+                yield "\n"
+                yield "```\n"
+            else:
+                pass
             
             # Stream content with safe escaping
             chunk_count = 0
@@ -558,7 +547,8 @@ class Pipeline:
                     chunk_count += 1
                     # Safe escaping that preserves formatting
                     safe_chunk = chunk.replace("```", "`​`​`")  # Zero-width space
-                    yield safe_chunk
+                    if self.valves.USE_AGENT:
+                        yield safe_chunk
                 except queue.Empty:
                     continue
                 except Exception as e:
@@ -566,19 +556,22 @@ class Pipeline:
                     break
 
             # Close the streaming section
-            yield "\n```\n"
-            yield "    <summary>Final Response</summary>\n"
-            yield "</details>\n"
-            yield "\n---\n"
-
-            
+            if self.valves.USE_AGENT:
+                yield "\n```\n"
+                yield "    <summary>Final Response</summary>\n"
+                yield "</details>\n"
+                yield "\n---\n"
+            else:
+                pass
 
             # Wait for thread completion
             print("Waiting for thread completion...")
-            thread.join(timeout=5)
+            thread.join(timeout=10)
 
             # After streaming finishes → download and upload reference highlighting to OpenWebUI
             reference_files = []
+            print(f"Final message ID: {message_id}, current_openwebui_chat_id: {self.current_openwebui_chat_id}")
+            print(f"message_id and self.current_openwebui_chat_id: {message_id and self.current_openwebui_chat_id}")
             if message_id and self.current_openwebui_chat_id:
                 reference_files = self._download_and_upload_reference_highlighting(
                     message_id=message_id,
@@ -594,14 +587,14 @@ class Pipeline:
             print(f"Final answer extracted: {bool(final_answer)}")
             
             if final_answer and final_answer.strip():
-                yield "<details open>\n"
+                #yield "<details open>\n"
                 yield "\n**✨ Final Answer:**\n\n"
                 yield final_answer
                 yield "\n\n"
-                yield "</details>\n"
+                #yield "</details>\n"
             else:
                 print("No final answer to display")
-                yield "\n**⚠️ Processing completed - see details above for full response.**\n\n"
+                #yield "\n**⚠️ Processing completed - see details above for full response.**\n\n"
             
             # Display reference files with proper OpenWebUI links
             if reference_files:
@@ -654,46 +647,167 @@ class Pipeline:
             ingestion_id = self.ingest_upload_with_requests(upload_id, collection_id)
             print(f"⚙️ Ingestion started (id={ingestion_id})...")
 
-            # Step 4: Poll ingestion status until finished
-            start_time = time.time()
-            while True:
-                if time.time() - start_time > self.valves.INGESTION_TIMEOUT:
-                    raise TimeoutError(f"Ingestion timed out after {self.valves.INGESTION_TIMEOUT} seconds")
-                
-                try:
-                    status_info = self.check_ingestion_status_with_requests(ingestion_id)
-                    state = status_info.get("state") or status_info.get("status") or "processing"
-                    
-                    if state.lower() in ["completed", "success", "done"]:
-                        print("🎉 Document ingested successfully!")
-                        return collection_id
-                    elif state.lower() in ["failed", "error"]:
-                        error_msg = status_info.get("error") or status_info.get("message", "Unknown ingestion error")
-                        raise RuntimeError(f"❌ Ingestion failed: {error_msg}")
-                    else:
-                        print(f"⏳ Ingestion status: {state}... waiting")
-                        time.sleep(3)
-                        
-                except Exception as status_error:
-                    self.log_debug(f"Status check error: {status_error}")
-                    # Continue trying for a while in case it's a temporary issue
-                    if time.time() - start_time < 30:  # First 30 seconds, keep trying
-                        print(f"⏳ Status check failed, retrying... ({status_error})")
-                        time.sleep(5)
-                        continue
-                    else:
-                        # After 30 seconds, assume success if we can't check status
-                        print("⚠️ Cannot verify ingestion status, assuming success...")
-                        return collection_id
 
         except Exception as e:
             error_msg = f"Upload and ingestion error: {str(e)}"
             print(error_msg)
             raise RuntimeError(error_msg)
+        
+    
+    def has_new_files_to_upload(self, body: Dict[str, Any]) -> bool:
+        """
+        Analyze files in body and determine if there are new files to upload.
+        Returns True if there are new files, False otherwise.
+        """
+        try:
+            # Get files from body
+            current_files = body.get("files", [])
+            
+            # If no files in body, nothing to upload
+            if not current_files:
+                print("📄 No files in request body")
+                return False
+            
+            # Initialize processed_file_ids if not exists
+            if not hasattr(self, 'processed_file_ids'):
+                self.processed_file_ids = set()
+                
+            # Extract current file IDs from body
+            current_file_ids = set()
+            for file_info in current_files:
+                file_id = file_info.get("id") or file_info.get("file", {}).get("id")
+                if file_id:
+                    current_file_ids.add(file_id)
+            
+            print(f"Current file IDs: {current_file_ids}")
+            print(f"Previously processed IDs: {self.processed_file_ids}")
+            
+            # Check for new file IDs
+            new_file_ids = current_file_ids - self.processed_file_ids
+            
+            if new_file_ids:
+                print(f"🆕 New file IDs detected: {new_file_ids}")
+                # Store the new file information in body for later use
+                body["new_file_ids"] = list(new_file_ids)
+                body["new_files"] = [
+                    file_info for file_info in current_files 
+                    if (file_info.get("id") or file_info.get("file", {}).get("id")) in new_file_ids
+                ]
+                return True
+            else:
+                print("📋 No new files detected - all files already processed")
+                body["new_file_ids"] = []
+                body["new_files"] = []
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error checking for new files: {str(e)}")
+            # On error, assume no new files to be safe
+            return False
+
+    def mark_files_as_processed(self, file_ids: List[str]) -> None:
+        """
+        Mark given file IDs as processed to avoid re-uploading.
+        """
+        if not hasattr(self, 'processed_file_ids'):
+            self.processed_file_ids = set()
+        
+        for file_id in file_ids:
+            self.processed_file_ids.add(file_id)
+        
+        print(f"✅ Marked files as processed: {file_ids}")
+        print(f"Total processed files: {len(self.processed_file_ids)}")
+
+    def reset_processed_files(self) -> None:
+        """
+        Reset the processed files tracking (useful when chat session changes).
+        """
+        if hasattr(self, 'processed_file_ids'):
+            print(f"🧹 Clearing {len(self.processed_file_ids)} processed file IDs")
+            self.processed_file_ids.clear()
+        else:
+            self.processed_file_ids = set()
+        print("✨ Processed files tracking reset")
+
+    def get_file_details_for_upload(self, body: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Get detailed information about new files that need to be uploaded.
+        Returns list of file details with paths and metadata.
+        """
+        SHARED_UPLOAD_DIR = "/app/uploads"
+        
+        if not self.has_new_files_to_upload(body):
+            return []
+        
+        upload_files = []
+        
+        for file_info in body.get("new_files", []):
+            try:
+                file_data = file_info.get("file", file_info)
+                file_id = file_info.get("id") or file_data.get("id")
+                filename = file_data.get("filename")
+                local_path = file_data.get("path")
+                
+                if not all([file_id, filename, local_path]):
+                    print(f"⚠️ Incomplete file info: {file_info}")
+                    continue
+                
+                # Convert to shared path
+                shared_path = local_path.replace(
+                    "/app/backend/data/uploads",
+                    SHARED_UPLOAD_DIR
+                )
+                
+                # Verify file exists
+                if not os.path.exists(shared_path):
+                    print(f"❌ File not found: {shared_path}")
+                    continue
+                
+                upload_files.append({
+                    "file_id": file_id,
+                    "filename": filename,
+                    "local_path": local_path,
+                    "shared_path": shared_path,
+                    "size": file_data.get("size", 0),
+                    "content_type": file_data.get("meta", {}).get("content_type", "application/octet-stream")
+                })
+                
+                print(f"📁 Prepared for upload: {filename} ({file_id})")
+                
+            except Exception as e:
+                print(f"❌ Error processing file info: {str(e)}")
+                continue
+        
+        return upload_files
+
+    def is_meaningful_chat_change(self, previous_chat_id: Optional[str], current_chat_id: Optional[str]) -> bool:
+        """
+        Determine if a chat ID change is meaningful and should trigger session reset.
+        Ignores temporary None values from follow-up generation or internal processes.
+        """
+        # If both are None, no change
+        if previous_chat_id is None and current_chat_id is None:
+            return False
+        
+        # If previous was None and current has a value, it's a new session start
+        if previous_chat_id is None and current_chat_id is not None:
+            return True
+        
+        # If current is None but previous had a value, it's likely temporary (follow-ups)
+        # Don't treat this as a meaningful change
+        if previous_chat_id is not None and current_chat_id is None:
+            print("🔍 Detected temporary None chat ID (likely follow-up generation), ignoring...")
+            return False
+        
+        # If both have values and they're different, it's a real chat change
+        if previous_chat_id != current_chat_id:
+            return True
+        
+        # No meaningful change
+        return False
 
     async def inlet(self, body: Dict[str, Any], user: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Process incoming requests - handle file uploads and chat ID management"""
-        SHARED_UPLOAD_DIR = "/app/uploads"
         print("=== Inlet triggered ===")
 
         # Handle chat ID comparison and tracking
@@ -708,71 +822,90 @@ class Pipeline:
         print(f"Previous chat ID: {body['previous_openwebui_chat_id']}")
         print(f"Current chat ID: {body['current_openwebui_chat_id']}")
         
-        # Check if chat ID changed
-        if current_openwebui_chat_id != self.current_openwebui_chat_id:
-            print("🔄 OpenWebUI chat ID changed, will reset H2OGPTE session in pipe()")
+        # Use improved chat change detection
+        meaningful_chat_change = self.is_meaningful_chat_change(
+            self.current_openwebui_chat_id, 
+            current_openwebui_chat_id
+        )
+        
+        if meaningful_chat_change:
+            print("🔄 Meaningful OpenWebUI chat ID change detected, will reset H2OGPTE session in pipe()")
             body["chat_id_changed"] = True
+            # Only reset processed files tracking on meaningful chat changes
+            self.reset_processed_files()
+            print("🗂️ Reset file tracking due to meaningful chat change")
         else:
             body["chat_id_changed"] = False
+            if current_openwebui_chat_id is None:
+                print("📝 Temporary chat ID change (follow-up generation), maintaining session state")
 
-        # Handle file uploads
-        if body.get("files"):
-            file_info = body["files"][0]
-            filename = file_info["file"]["filename"]
-            local_path = file_info["file"]["path"]
-
-            shared_path = local_path.replace(
-                "/app/backend/data/uploads",
-                SHARED_UPLOAD_DIR
-            )
-
-            print("Filename:", filename)
-            print("Reported local path:", local_path)
-            print("Expected shared path:", shared_path)
-
-            if os.path.exists(shared_path):
-                print(f"✅ File exists in shared storage: {shared_path}")
-                body["pipeline_file_path"] = shared_path
-
-                # Ingest the document to H2O GPT Enterprise
-                try:
-                    if not self.valves.COLLECTION_ID and self.valves.AUTO_CREATE_COLLECTION:
-                        print("📤 No collection ID set, will create new collection and ingest document...")
-                        collection_id = self.upload_and_ingest(
-                            file_path=shared_path,
-                            collection_name=f"{self.valves.DEFAULT_COLLECTION_NAME}_{int(time.time())}",
-                            description=f"Auto-created collection for {filename}"
-                        )
-                        body["ingestion_status"] = "success"
-                        body["collection_id"] = collection_id
-                        print(f"🎉 Document successfully ingested to collection: {collection_id}")
-                    elif self.valves.COLLECTION_ID:
-                        print(f"📤 Ingesting document to existing collection: {self.valves.COLLECTION_ID}")
-                        self.current_collection_id = self.valves.COLLECTION_ID
-                        collection_id = self.upload_and_ingest(
-                            file_path=shared_path,
-                            description=f"Document: {filename}"
-                        )
-                        body["ingestion_status"] = "success"
-                        body["collection_id"] = collection_id
-                        print(f"🎉 Document successfully ingested to collection: {collection_id}")
-                    else:
-                        print("⚠️ No collection ID set and auto-creation disabled. Document uploaded but not ingested.")
-                        body["ingestion_status"] = "skipped"
-                        body["message"] = "Document uploaded but not ingested. Please set COLLECTION_ID or enable AUTO_CREATE_COLLECTION."
+        # Check for new files to upload using the new function
+        has_new_files = self.has_new_files_to_upload(body)
+        body["has_new_files"] = has_new_files
+        
+        if has_new_files:
+            print("🆕 New files detected for upload/ingestion")
+            
+            # Get detailed file information for upload
+            upload_files = self.get_file_details_for_upload(body)
+            body["upload_files"] = upload_files
+            
+            if upload_files:
+                print(f"📤 Processing {len(upload_files)} new files...")
                 
-                except Exception as e:
-                    error_msg = f"Failed to ingest document: {str(e)}"
-                    print(f"❌ {error_msg}")
-                    body["ingestion_status"] = "failed"
-                    body["ingestion_error"] = error_msg
-
+                # Process each new file
+                for file_details in upload_files:
+                    file_id = file_details["file_id"]
+                    filename = file_details["filename"]
+                    shared_path = file_details["shared_path"]
+                    
+                    try:
+                        print(f"Processing file: {filename} (ID: {file_id})")
+                        
+                        # Determine collection strategy
+                        if not self.valves.COLLECTION_ID and self.valves.AUTO_CREATE_COLLECTION:
+                            print("📤 No collection ID set, will create new collection...")
+                            collection_id = self.upload_and_ingest(
+                                file_path=shared_path,
+                                collection_name=f"{self.valves.DEFAULT_COLLECTION_NAME}_{int(time.time())}",
+                                description=f"Auto-created collection for {filename}"
+                            )
+                            body["collection_id"] = collection_id
+                            print(f"🎉 Document successfully ingested to new collection: {collection_id}")
+                            
+                        elif self.valves.COLLECTION_ID:
+                            print(f"📤 Ingesting document to existing collection: {self.valves.COLLECTION_ID}")
+                            collection_id = self.upload_and_ingest(
+                                file_path=shared_path,
+                                description=f"Document: {filename}"
+                            )
+                            body["collection_id"] = collection_id
+                            print(f"🎉 Document successfully ingested to collection: {collection_id}")
+                            
+                        else:
+                            print("⚠️ No collection ID set and auto-creation disabled.")
+                            body["ingestion_status"] = "skipped"
+                            body["message"] = "Document uploaded but not ingested. Please set COLLECTION_ID or enable AUTO_CREATE_COLLECTION."
+                            continue
+                        
+                        # Mark this file as processed
+                        self.mark_files_as_processed([file_id])
+                        body["ingestion_status"] = "success"
+                        
+                    except Exception as e:
+                        error_msg = f"Failed to ingest document {filename}: {str(e)}"
+                        print(f"❌ {error_msg}")
+                        body["ingestion_status"] = "failed"
+                        body["ingestion_error"] = error_msg
+                        # Don't mark as processed if it failed
+                        
             else:
-                print(f"❌ File not found in shared storage: {shared_path}")
-                body["file_error"] = f"File not found: {shared_path}"
-
+                print("❌ No valid files found for upload")
+                body["ingestion_status"] = "no_valid_files"
+                
         else:
-            print("📄 No files in body — treating as query/message request")
+            print("📄 No new files detected - treating as query/message request")
+            body["ingestion_status"] = "no_new_files"
 
         return body
 
@@ -793,7 +926,7 @@ class Pipeline:
             previous_openwebui_chat_id = body.get("previous_openwebui_chat_id")
             chat_id_changed = body.get("chat_id_changed", False)
             
-            print(f"Processing request - Chat ID changed: {chat_id_changed}")
+            print(f"Processing request - Meaningful chat ID change: {chat_id_changed}")
             
             # Ensure client is initialized
             if not self.client:
@@ -803,13 +936,23 @@ class Pipeline:
             if not self.chat_session_id:
                 # First time - create new session
                 self.init_chat_session()
-                self.current_openwebui_chat_id = current_openwebui_chat_id
+                # Only update current chat ID if it's not None (avoid storing temporary states)
+                if current_openwebui_chat_id is not None:
+                    self.current_openwebui_chat_id = current_openwebui_chat_id
                 print("🆕 Created new H2OGPTE chat session")
             elif chat_id_changed:
-                # OpenWebUI chat changed - reset H2OGPTE session
-                print("🔄 Resetting H2OGPTE session due to OpenWebUI chat change")
-                self.reset_chat_session(self.current_collection_id, "OpenWebUI chat change")
-                self.current_openwebui_chat_id = current_openwebui_chat_id
+                # Meaningful OpenWebUI chat change - reset H2OGPTE session
+                print("🔄 Resetting H2OGPTE session due to meaningful OpenWebUI chat change")
+                self.reset_chat_session(self.current_collection_id, "meaningful OpenWebUI chat change")
+                # Only update current chat ID if it's not None
+                if current_openwebui_chat_id is not None:
+                    self.current_openwebui_chat_id = current_openwebui_chat_id
+            else:
+                # No meaningful change - keep existing session
+                # Only update chat ID if current is not None (preserve existing for temporary None states)
+                if current_openwebui_chat_id is not None and current_openwebui_chat_id != self.current_openwebui_chat_id:
+                    print("🔄 Updating stored chat ID without session reset")
+                    self.current_openwebui_chat_id = current_openwebui_chat_id
             
             # Handle collection changes from document ingestion
             ingestion_status = body.get("ingestion_status")
@@ -873,7 +1016,7 @@ class Pipeline:
                 "visible_vision_models": ["auto"],
                 
                 # Agent configs (lightweight by default)
-                "use_agent": False,
+                "use_agent": self.valves.USE_AGENT,
                 "agent_max_turns": 7, 
                 "agent_accuracy": "basic", 
                 "agent_timeout": 30,
