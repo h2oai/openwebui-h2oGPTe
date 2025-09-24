@@ -9,6 +9,9 @@ from pydantic import BaseModel
 import requests
 import json
 import re
+import shutil
+import concurrent.futures
+import tempfile
 try:
     from h2ogpte import H2OGPTE
     from h2ogpte.types import PartialChatMessage, ChatMessage
@@ -482,8 +485,9 @@ class Pipeline:
             return []         
 
     def _stream_response(self, query_args: dict) -> Generator[str, None, None]:
-        """Enhanced streaming with improved display and final answer extraction"""
-        print("Starting enhanced _stream_response with improved extraction")
+        """Enhanced streaming with prioritized user experience and progressive reference handling"""
+        print("Starting enhanced _stream_response with progressive reference processing")
+        
         try:
             response_queue = queue.Queue()
             completed = threading.Event()
@@ -498,13 +502,13 @@ class Pipeline:
                         if hasattr(message, "id") and message.id:
                             message_id = message.id
                             print(f"✅ Captured final ChatMessage ID: {message_id}")
+                            
                     if isinstance(message, PartialChatMessage) and message.content:
                         print(f"message is :{message}")
                         new_text = message.content
                         full_stream_buffer.append(new_text)
                         response_queue.put(new_text)
                         print(f"Streaming callback received: {len(new_text)} chars")
-
 
                 except Exception as e:
                     self.log_debug(f"Streaming callback error: {e}")
@@ -514,7 +518,7 @@ class Pipeline:
                 try:
                     print("Query thread starting...")
                     with self.client.connect(self.chat_session_id) as session:
-                        result=session.query(**query_args, callback=streaming_callback)
+                        result = session.query(**query_args, callback=streaming_callback)
                         print(f"Query result: {result}")
                     print("Query thread completed successfully")
                 except Exception as e:
@@ -530,7 +534,9 @@ class Pipeline:
             thread.start()
             print("Streaming thread started")
 
-            # Phase 1: Enhanced collapsible details section
+            # PHASE 1: PRIORITY STREAMING - Stream content immediately to user
+            print("PHASE 1: Starting priority content streaming")
+            
             if self.valves.USE_AGENT:
                 yield "<details open>\n"
                 yield "    <summary>🧠 Live Agentic Flow (Processing...)</summary>\n"
@@ -539,23 +545,32 @@ class Pipeline:
             else:
                 pass
             
-            # Stream content with safe escaping
+            # Stream content with safe escaping - prioritize user experience
             chunk_count = 0
+            yielded_content = set()
+            
             while not completed.is_set() or not response_queue.empty():
                 try:
                     chunk = response_queue.get(timeout=1.0)
                     chunk_count += 1
+                    
                     # Safe escaping that preserves formatting
                     safe_chunk = chunk.replace("```", "`​`​`")  # Zero-width space
+                    
                     if self.valves.USE_AGENT:
                         yield safe_chunk
+                    else:
+                        if safe_chunk not in yielded_content:
+                            yielded_content.add(safe_chunk)
+                            yield safe_chunk
+                            
                 except queue.Empty:
                     continue
                 except Exception as e:
                     self.log_debug(f"Live streaming error: {e}")
                     break
 
-            # Close the streaming section
+            # Close the streaming section and show final answer
             if self.valves.USE_AGENT:
                 yield "\n```\n"
                 yield "    <summary>Final Response</summary>\n"
@@ -568,45 +583,140 @@ class Pipeline:
             print("Waiting for thread completion...")
             thread.join(timeout=10)
 
-            # After streaming finishes → download and upload reference highlighting to OpenWebUI
-            reference_files = []
-            print(f"Final message ID: {message_id}, current_openwebui_chat_id: {self.current_openwebui_chat_id}")
-            print(f"message_id and self.current_openwebui_chat_id: {message_id and self.current_openwebui_chat_id}")
-            if message_id and self.current_openwebui_chat_id:
-                reference_files = self._download_and_upload_reference_highlighting(
-                    message_id=message_id,
-                    chat_id=self.current_openwebui_chat_id
-                )
-                print(f"Downloaded and uploaded {len(reference_files)} reference highlighting files")
-            
-            # Phase 2: Enhanced final answer extraction
+            # Extract and display final answer
             full_response_text = "".join(full_stream_buffer)
             print(f"Full response length: {len(full_response_text)} chars")
             
             final_answer = self._extract_final_answer_robust(full_response_text)
             print(f"Final answer extracted: {bool(final_answer)}")
             
-            if final_answer and final_answer.strip():
-                #yield "<details open>\n"
-                yield "\n**✨ Final Answer:**\n\n"
+            if final_answer and final_answer.strip() and self.valves.USE_AGENT:
+                yield "\n✨ Final Answer:\n\n"
                 yield final_answer
                 yield "\n\n"
-                #yield "</details>\n"
-            else:
-                print("No final answer to display")
-                #yield "\n**⚠️ Processing completed - see details above for full response.**\n\n"
-            
-            # Display reference files with proper OpenWebUI links
-            if reference_files:
-                yield "\n\n---\n\n"
-                yield "**📚 Source References:**\n\n"
-                
-                for idx, ref_file in enumerate(reference_files, 1):
-                    if ref_file.get('id'):  # Successfully uploaded to OpenWebUI
-                        yield f"{idx}. [📄 {ref_file['name']}]({ref_file['view_url']}) *(via OpenWebUI)*\n"
-                    elif ref_file.get('path'):  # Fallback to local path
-                        yield f"{idx}. 📄 {ref_file['name']} *(local file: {ref_file.get('error', 'upload failed')})*\n"
 
+            print("PHASE 1 COMPLETE: Content streaming finished")
+
+            # PHASE 2: PROGRESSIVE REFERENCE HANDLING
+            print("PHASE 2: Starting progressive reference processing")
+            
+            if not (message_id and self.current_openwebui_chat_id):
+                print("No message ID or chat ID available for reference processing")
+                return
+
+            # Start reference processing indicator
+            yield "\n---\n\n"
+            yield "📚 Processing Source References...\n\n"
+
+            try:
+                # Download reference highlighting files
+                temp_dir = tempfile.mkdtemp(prefix=f"h2ogpte_refs_{self.current_openwebui_chat_id}_")
+                print(f"Created temp directory: {temp_dir}")
+                
+                try:
+                    # Download all reference files first
+                    print("Downloading reference highlighting files...")
+                    highlighted_files = self.client.download_reference_highlighting(
+                        message_id=message_id,
+                        destination_directory=temp_dir,
+                        output_type="combined",
+                        limit=None
+                    )
+                    
+                    if not highlighted_files:
+                        yield "No source references available for this response.\n\n"
+                        return
+
+                    print(f"Downloaded {len(highlighted_files)} highlighted files")
+                    yield f"Found {len(highlighted_files)} source reference(s) - uploading...\n\n"
+
+                    # PHASE 3: PARALLEL UPLOAD WITH PROGRESSIVE RESULTS
+                    print("PHASE 3: Starting parallel uploads with progressive results")
+                    
+                    def upload_single_file(file_path: str) -> Dict[str, Any]:
+                        """Upload a single file and return result info"""
+                        file_name = os.path.basename(file_path)
+                        try:
+                            print(f"Uploading {file_name}...")
+                            upload_result = self.upload_file_to_openwebui(str(file_path))
+                            
+                            if upload_result:
+                                file_id = upload_result.get('id')
+                                return {
+                                    "success": True,
+                                    "id": file_id,
+                                    "name": file_name,
+                                    "upload_url": f"{self.valves.OPENWEBUI_BASE_URL}/api/v1/files/{file_id}/content",
+                                    "view_url": f"http://localhost:3000/api/v1/files/{file_id}/content",
+                                    "type": "pdf",
+                                    "source": "h2ogpte_reference"
+                                }
+                            else:
+                                return {
+                                    "success": False,
+                                    "name": file_name,
+                                    "path": str(file_path),
+                                    "error": "Failed to upload to OpenWebUI"
+                                }
+                                
+                        except Exception as e:
+                            print(f"Upload error for {file_name}: {str(e)}")
+                            return {
+                                "success": False,
+                                "name": file_name,
+                                "error": str(e)
+                            }
+
+                    # Use ThreadPoolExecutor for parallel uploads
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                        # Submit all upload tasks
+                        future_to_file = {
+                            executor.submit(upload_single_file, file_path): file_path 
+                            for file_path in highlighted_files
+                        }
+                        
+                        reference_count = 0
+                        
+                        # Process completed uploads as they finish
+                        for future in concurrent.futures.as_completed(future_to_file):
+                            file_path = future_to_file[future]
+                            
+                            try:
+                                result = future.result()
+                                reference_count += 1
+                                
+                                if result["success"]:
+                                    # Yield successful upload without bold formatting
+                                    yield f"{reference_count}. 📄 [{result['name']}]({result['view_url']}) (ID: {result['id']})\n"
+                                    print(f"Successfully uploaded and yielded: {result['name']}")
+                                else:
+                                    # Yield failed upload info without bold formatting
+                                    yield f"{reference_count}. 📄 {result['name']} (Upload failed: {result.get('error', 'Unknown error')})\n"
+                                    print(f"Failed upload yielded: {result['name']}")
+                                    
+                            except Exception as e:
+                                reference_count += 1
+                                file_name = os.path.basename(file_path)
+                                yield f"{reference_count}. 📄 {file_name} (Processing error: {str(e)})\n"
+                                print(f"Exception during upload processing: {str(e)}")
+
+                    print("PHASE 3 COMPLETE: All reference uploads processed")
+                    
+                finally:
+                    # Clean up temporary directory
+                    try:
+                        shutil.rmtree(temp_dir)
+                        self.log_debug(f"Cleaned up temporary directory: {temp_dir}")
+                    except Exception as cleanup_error:
+                        self.log_debug(f"Failed to clean up temp directory: {cleanup_error}")
+
+            except Exception as e:
+                error_msg = f"Reference processing error: {str(e)}"
+                print(f"PHASE 2/3 ERROR: {error_msg}")
+                yield f"\nError processing references: {error_msg}\n"
+
+            print("PHASE 2 & 3 COMPLETE: Reference processing finished")
+        
         except Exception as e:
             error_msg = f"Enhanced streaming error: {str(e)}"
             print(f"_stream_response error: {error_msg}")
